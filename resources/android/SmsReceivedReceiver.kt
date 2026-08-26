@@ -9,12 +9,12 @@ import com.nativephp.mobile.bridge.PHPBridge
 import org.json.JSONObject
 
 /**
- * SPIKE (docs/specs/mobile/telephony-gateway-plugin.md): proves a headless
- * receiver -- no Activity, no WebView, possibly not even the app's own UI
- * process foregrounded -- can reach PHP via NativePHP's ephemeral runtime
- * (nativeEphemeralBoot + nativeEphemeralArtisan), which is a SEPARATE
+ * Headless receiver -- no Activity, no WebView, possibly not even the app's
+ * own UI process foregrounded -- reaches PHP via NativePHP's ephemeral
+ * runtime (nativeEphemeralBoot + nativeEphemeralArtisan), a SEPARATE
  * interpreter from the one serving the WebView (see PHPBridge.kt /
- * php_bridge.c's g_ephemeral_mutex).
+ * php_bridge.c's g_ephemeral_mutex). See docs/specs/mobile/
+ * telephony-gateway-plugin.md for the spike that proved this mechanism.
  *
  * goAsync() extends this receiver's lifetime past onReceive()'s return so the
  * (potentially slow, first-boot) JNI call can run on a background thread
@@ -40,6 +40,13 @@ class SmsReceivedReceiver : BroadcastReceiver() {
         val from = messages[0].originatingAddress ?: "unknown"
         val body = messages.joinToString(separator = "") { it.messageBody ?: "" }
         val receivedAt = messages[0].timestampMillis
+        // The OS never assigns this a provider row id before this receiver runs
+        // (that only happens once inserted into the Sms ContentProvider, not
+        // guaranteed here for a non-default-SMS-app) -- a stable hash of the
+        // message's own identifying fields is 14.22's own documented fallback.
+        val deviceMessageUid = (from + body + receivedAt.toString()).hashCode().toString()
+        val subscriptionId = intent.getIntExtra("subscription", -1)
+        val slot = SimSlots.slotForSubscriptionId(context, subscriptionId) ?: 0
 
         Log.i(TAG, "onReceive: SMS from=$from bodyLen=${body.length} — dispatching to ephemeral PHP")
 
@@ -54,9 +61,10 @@ class SmsReceivedReceiver : BroadcastReceiver() {
                 bridge.nativeEphemeralBoot(bootstrapPath)
 
                 val payload = JSONObject().apply {
+                    put("device_message_uid", deviceMessageUid)
                     put("from", from)
                     put("body", body)
-                    put("slot", 0) // TODO: resolve real slot via SubscriptionManager once past the spike
+                    put("slot", slot)
                     put("received_at", receivedAt)
                 }.toString()
 

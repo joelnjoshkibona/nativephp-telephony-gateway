@@ -47,6 +47,12 @@
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.SendUssd",
             "ios": "TelephonyGatewayFunctions.SendUssd",
             "description": "Dial a USSD code; response arrives later via telephony:ussd-result"
+        },
+        {
+            "name": "TelephonyGateway.ListSims",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.ListSims",
+            "ios": "TelephonyGatewayFunctions.ListSims",
+            "description": "Enumerate active SIM slots (slot, subscription_id, phone_number, operator)"
         }
     ],
     "android": {
@@ -55,6 +61,7 @@
             "android.permission.RECEIVE_SMS",
             "android.permission.SEND_SMS",
             "android.permission.READ_CALL_LOG",
+            "android.permission.READ_PHONE_STATE",
             "android.permission.FOREGROUND_SERVICE",
             "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
             "android.permission.POST_NOTIFICATIONS",

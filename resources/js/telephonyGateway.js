@@ -4,11 +4,8 @@
  * @example
  * import { telephonyGateway } from '@blutrixx/nativephp-telephony-gateway';
  *
- * // Execute functionality
- * const result = await telephonyGateway.execute({ option1: 'value' });
- *
- * // Get status
- * const status = await telephonyGateway.getStatus();
+ * const sims = await telephonyGateway.listSims();
+ * await telephonyGateway.startService();
  */
 
 const baseUrl = '/_native/api/call';
@@ -41,29 +38,42 @@ async function bridgeCall(method, params = {}) {
     return nativeResponse;
 }
 
-/**
- * Execute the plugin functionality
- * @param {Object} options - Options to pass to the native function
- * @returns {Promise<any>}
- */
-export async function execute(options = {}) {
-    return bridgeCall('TelephonyGateway.Execute', options);
+/** Starts the persistent foreground service (SMS receiver anchor, CallLog observer, poll loop). */
+export async function startService() {
+    return bridgeCall('TelephonyGateway.StartService');
+}
+
+export async function stopService() {
+    return bridgeCall('TelephonyGateway.StopService');
 }
 
 /**
- * Get the current status
- * @returns {Promise<Object>}
+ * Send an SMS. Fire-and-forget -- the outcome arrives later via the backend's own
+ * message status, not this call's return value.
  */
-export async function getStatus() {
-    return bridgeCall('TelephonyGateway.GetStatus');
+export async function sendSms(to, body, clientRef) {
+    return bridgeCall('TelephonyGateway.SendSms', { to, body, client_ref: clientRef });
+}
+
+/** Dial a USSD code. The response arrives later, asynchronously. */
+export async function sendUssd(code, requestId) {
+    return bridgeCall('TelephonyGateway.SendUssd', { code, request_id: requestId });
+}
+
+/** Enumerate active SIM slots: [{slot, subscription_id, phone_number, operator, is_present}]. */
+export async function listSims() {
+    return bridgeCall('TelephonyGateway.ListSims');
 }
 
 /**
  * TelephonyGateway namespace object
  */
 export const telephonyGateway = {
-    execute,
-    getStatus
+    startService,
+    stopService,
+    sendSms,
+    sendUssd,
+    listSims
 };
 
 export default telephonyGateway;

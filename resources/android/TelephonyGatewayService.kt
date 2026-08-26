@@ -15,6 +15,7 @@ import android.provider.CallLog
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.nativephp.mobile.bridge.PHPBridge
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -37,9 +38,12 @@ class TelephonyGatewayService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val PREFS_NAME = "telephony_gateway"
         private const val PREF_LAST_CALL_LOG_ID = "last_call_log_id"
+        private const val FALLBACK_POLL_SECONDS = 20L
     }
 
     private var observer: ContentObserver? = null
+    private val pollHandler = Handler(Looper.getMainLooper())
+    private var pollRunnable: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -57,6 +61,108 @@ class TelephonyGatewayService : Service() {
 
         // Catch anything that landed before the observer was registered.
         EphemeralDispatch.post { checkForNewMissedCalls() }
+
+        schedulePollTick(0)
+    }
+
+    /**
+     * Self-rescheduling claim loop -- the device's primary work loop. Each
+     * tick's own PHP half (telephony:poll-claim) does the HTTP call and
+     * business logic only; this loop does the sending, since the ephemeral
+     * runtime it dispatches through cannot call nativephp_call() itself
+     * (confirmed via this project's own spike -- see
+     * docs/specs/mobile/telephony-gateway-plugin.md). Every claimed job is
+     * sent via TelephonyGatewayFunctions' direct functions -- a plain
+     * in-process call, not a bridge round trip.
+     */
+    private fun schedulePollTick(delayMillis: Long) {
+        pollRunnable?.let { pollHandler.removeCallbacks(it) }
+        val runnable = Runnable { runPollTick() }
+        pollRunnable = runnable
+        pollHandler.postDelayed(runnable, delayMillis)
+    }
+
+    private fun runPollTick() {
+        EphemeralDispatch.post {
+            var nextPollSeconds = FALLBACK_POLL_SECONDS
+            try {
+                val sims = SimSlots.listActive(applicationContext)
+                val slotToSubscription = sims.associate { it.slot to it.subscriptionId }
+                val simsJson = JSONArray().apply {
+                    sims.forEach {
+                        put(JSONObject().apply {
+                            put("slot", it.slot)
+                            put("subscription_id", it.subscriptionId)
+                            put("is_present", true)
+                        })
+                    }
+                }
+                val encodedSims = android.util.Base64.encodeToString(
+                    simsJson.toString().toByteArray(Charsets.UTF_8),
+                    android.util.Base64.NO_WRAP
+                )
+
+                val bridge = PHPBridge(applicationContext)
+                val bootstrapPath = "${bridge.getLaravelPath()}/bootstrap/android/ephemeral.php"
+                bridge.nativeEphemeralBoot(bootstrapPath)
+
+                val command = "telephony:poll-claim --sims=$encodedSims"
+                Log.i(TAG, "calling nativeEphemeralArtisan: $command")
+                val returnedResult = bridge.nativeEphemeralArtisan(command)?.trim()
+                Log.i(TAG, "poll-claim return value: $returnedResult")
+
+                // nativeEphemeralArtisan()'s own return-value capture comes back
+                // empty for this command specifically (confirmed live, repeatedly
+                // -- a real backend claim succeeds server-side with no exception
+                // thrown, yet the captured stdout is blank) -- read the result
+                // file the command itself writes instead. NOTE: PHPBridge.
+                // getLaravelPath() points at the read-only BUNDLE copy of the app
+                // (".../storage/laravel", replaced on every redeploy) -- storage
+                // writes actually land under the separate, persistent
+                // ".../storage/persisted_data/storage" tree (confirmed by reading
+                // LaravelEnvironment.kt's own DIR_APP constant), which is why the
+                // first version of this fix always saw exists=false.
+                val appStorageDir = applicationContext.getDir("storage", android.content.Context.MODE_PRIVATE)
+                val resultFile = java.io.File(appStorageDir, "persisted_data/storage/app/gateway_poll_result.json")
+                val result = if (resultFile.exists()) resultFile.readText().trim() else returnedResult
+                Log.i(TAG, "poll-claim result (from file): $result")
+
+                if (!result.isNullOrEmpty()) {
+                    val parsed = JSONObject(result)
+                    nextPollSeconds = parsed.optLong("next_poll_seconds", FALLBACK_POLL_SECONDS)
+                    val jobs = parsed.optJSONArray("jobs") ?: JSONArray()
+                    for (i in 0 until jobs.length()) {
+                        dispatchClaimedJob(jobs.getJSONObject(i), slotToSubscription)
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "runPollTick FAILED", e)
+            } finally {
+                schedulePollTick(nextPollSeconds * 1000)
+            }
+        }
+    }
+
+    private fun dispatchClaimedJob(job: JSONObject, slotToSubscription: Map<Int, Int>) {
+        val id = job.optString("id")
+        if (id.isEmpty()) return
+        val slot = job.optInt("slot", 0)
+        val subscriptionId = slotToSubscription[slot]
+
+        when (job.optString("type")) {
+            "sms" -> {
+                val to = job.optString("to")
+                if (to.isEmpty()) return
+                val body = job.optString("body", "")
+                TelephonyGatewayFunctions.sendSmsDirect(applicationContext, to, body, id, subscriptionId)
+            }
+            "ussd" -> {
+                val code = job.optString("code")
+                if (code.isEmpty()) return
+                TelephonyGatewayFunctions.sendUssdDirect(applicationContext, code, id, subscriptionId)
+            }
+            else -> Log.w(TAG, "dispatchClaimedJob: unknown job type in $job")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

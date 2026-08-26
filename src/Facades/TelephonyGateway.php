@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static object|null stopService()
  * @method static object|null sendSms(string $to, string $body, ?string $clientRef = null)
  * @method static object|null sendUssd(string $code, ?string $requestId = null)
+ * @method static object|null listSims()
  *
  * @see \Blutrixx\NativephpTelephonyGateway\TelephonyGateway
  */
