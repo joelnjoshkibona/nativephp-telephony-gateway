@@ -1,0 +1,121 @@
+{
+    "name": "blutrixx/nativephp-telephony-gateway",
+    "version": "1.0.0",
+    "description": "A NativePHP Mobile plugin",
+    "namespace": "TelephonyGateway",
+    "keywords": [],
+    "category": "utilities",
+    "license": "MIT",
+    "pricing": {
+        "type": "free"
+    },
+    "author": {
+        "name": "Your Name",
+        "email": "you@example.com",
+        "url": ""
+    },
+    "homepage": "",
+    "repository": "",
+    "funding": [],
+    "platforms": [
+        "android",
+        "ios"
+    ],
+    "icon": "resources/icon.png",
+    "screenshots": [],
+    "bridge_functions": [
+        {
+            "name": "TelephonyGateway.StartService",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.StartService",
+            "ios": "TelephonyGatewayFunctions.StartService",
+            "description": "Start the persistent foreground service (CallLog observer, SMS receiver anchor)"
+        },
+        {
+            "name": "TelephonyGateway.StopService",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.StopService",
+            "ios": "TelephonyGatewayFunctions.StopService",
+            "description": "Stop the persistent foreground service"
+        },
+        {
+            "name": "TelephonyGateway.SendSms",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.SendSms",
+            "ios": "TelephonyGatewayFunctions.SendSms",
+            "description": "Send an SMS; outcome arrives later via telephony:sms-result"
+        },
+        {
+            "name": "TelephonyGateway.SendUssd",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.SendUssd",
+            "ios": "TelephonyGatewayFunctions.SendUssd",
+            "description": "Dial a USSD code; response arrives later via telephony:ussd-result"
+        }
+    ],
+    "android": {
+        "min_version": 26,
+        "permissions": [
+            "android.permission.RECEIVE_SMS",
+            "android.permission.SEND_SMS",
+            "android.permission.READ_CALL_LOG",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.CALL_PHONE"
+        ],
+        "repositories": [],
+        "dependencies": {
+            "implementation": []
+        },
+        "activities": [],
+        "services": [
+            {
+                "name": ".TelephonyGatewayService",
+                "exported": false,
+                "foregroundServiceType": "dataSync"
+            }
+        ],
+        "receivers": [
+            {
+                "name": ".SmsReceivedReceiver",
+                "exported": true,
+                "intent_filters": [
+                    {
+                        "action": "android.provider.Telephony.SMS_RECEIVED"
+                    }
+                ]
+            },
+            {
+                "name": ".SmsResultReceiver",
+                "exported": false,
+                "intent_filters": [
+                    {
+                        "action": [
+                            "com.blutrixx.plugins.nativephp_telephony_gateway.SMS_SENT",
+                            "com.blutrixx.plugins.nativephp_telephony_gateway.SMS_DELIVERED"
+                        ]
+                    }
+                ]
+            }
+        ],
+        "providers": []
+    },
+    "ios": {
+        "min_version": "15.0",
+        "permissions": [],
+        "repositories": [],
+        "dependencies": {
+            "swift_packages": [],
+            "pods": []
+        }
+    },
+    "assets": {
+        "android": [],
+        "ios": []
+    },
+    "secrets": [],
+    "events": [
+        "Blutrixx\\NativephpTelephonyGateway\\Events\\TelephonyGatewayCompleted"
+    ],
+    "service_provider": "Blutrixx\\NativephpTelephonyGateway\\TelephonyGatewayServiceProvider",
+    "hooks": {
+        "copy_assets": "nativephp:telephony-gateway:copy-assets"
+    }
+}
