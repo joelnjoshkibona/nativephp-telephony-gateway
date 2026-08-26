@@ -39,11 +39,33 @@ class TelephonyGatewayService : Service() {
         private const val PREFS_NAME = "telephony_gateway"
         private const val PREF_LAST_CALL_LOG_ID = "last_call_log_id"
         private const val FALLBACK_POLL_SECONDS = 20L
+
+        /**
+         * Sent by nativephp-fcm's NativePHPFirebaseMessagingService when a
+         * "gateway_wake" push arrives -- reuses this service's own existing,
+         * already single-threaded poll mechanism instead of adding a second
+         * dispatch path.
+         */
+        const val ACTION_POLL_NOW = "com.blutrixx.plugins.nativephp_telephony_gateway.ACTION_POLL_NOW"
+
+        /** Slower than the claim loop on purpose -- telemetry/resync, not the message path. */
+        private const val HEARTBEAT_INTERVAL_SECONDS = 180L
+
+        // Read, never written, from here -- nativephp-fcm's own onNewToken()/
+        // RequestPermission bridge function own this SharedPreferences entry.
+        // A plain SharedPreferences read has no compile-time dependency on
+        // Firebase classes, unlike calling FirebaseMessaging.getInstance()
+        // directly would -- so this plugin keeps working (heartbeat just has
+        // no token to report) in an app that never installed nativephp-fcm.
+        private const val FCM_PREFS_NAME = "nativephp_push"
+        private const val FCM_PREFS_KEY = "fcm_token"
     }
 
     private var observer: ContentObserver? = null
     private val pollHandler = Handler(Looper.getMainLooper())
     private var pollRunnable: Runnable? = null
+    private val heartbeatHandler = Handler(Looper.getMainLooper())
+    private var heartbeatRunnable: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -63,6 +85,7 @@ class TelephonyGatewayService : Service() {
         EphemeralDispatch.post { checkForNewMissedCalls() }
 
         schedulePollTick(0)
+        scheduleHeartbeatTick(0)
     }
 
     /**
@@ -143,6 +166,53 @@ class TelephonyGatewayService : Service() {
         }
     }
 
+    /**
+     * A second, slower self-rescheduling timer on the same EphemeralDispatch
+     * thread as the claim loop -- telemetry/resync, not the message path, so
+     * it doesn't need the claim loop's own dynamic next-interval logic, just
+     * a fixed cadence.
+     */
+    private fun scheduleHeartbeatTick(delayMillis: Long) {
+        heartbeatRunnable?.let { heartbeatHandler.removeCallbacks(it) }
+        val runnable = Runnable { runHeartbeatTick() }
+        heartbeatRunnable = runnable
+        heartbeatHandler.postDelayed(runnable, delayMillis)
+    }
+
+    private fun runHeartbeatTick() {
+        EphemeralDispatch.post {
+            try {
+                // nativephp-fcm's own onNewToken()/RequestPermission bridge
+                // function own this key -- a plain SharedPreferences read, so
+                // this plugin has no compile-time dependency on Firebase
+                // classes and keeps working (just with no token to report)
+                // in an app that never installed nativephp-fcm.
+                val fcmToken = getSharedPreferences(FCM_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                    .getString(FCM_PREFS_KEY, null)
+
+                val bridge = PHPBridge(applicationContext)
+                val bootstrapPath = "${bridge.getLaravelPath()}/bootstrap/android/ephemeral.php"
+                bridge.nativeEphemeralBoot(bootstrapPath)
+
+                val command = if (!fcmToken.isNullOrEmpty()) {
+                    val encodedToken = android.util.Base64.encodeToString(
+                        fcmToken.toByteArray(Charsets.UTF_8),
+                        android.util.Base64.NO_WRAP
+                    )
+                    "telephony:heartbeat --fcm-token=$encodedToken"
+                } else {
+                    "telephony:heartbeat"
+                }
+                Log.i(TAG, "calling nativeEphemeralArtisan: $command")
+                bridge.nativeEphemeralArtisan(command)
+            } catch (e: Throwable) {
+                Log.e(TAG, "runHeartbeatTick FAILED", e)
+            } finally {
+                scheduleHeartbeatTick(HEARTBEAT_INTERVAL_SECONDS * 1000)
+            }
+        }
+    }
+
     private fun dispatchClaimedJob(job: JSONObject, slotToSubscription: Map<Int, Int>) {
         val id = job.optString("id")
         if (id.isEmpty()) return
@@ -166,6 +236,10 @@ class TelephonyGatewayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_POLL_NOW) {
+            Log.i(TAG, "onStartCommand: ACTION_POLL_NOW -- polling immediately")
+            schedulePollTick(0)
+        }
         return START_STICKY
     }
 
