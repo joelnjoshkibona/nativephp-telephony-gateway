@@ -127,14 +127,16 @@ object TelephonyGatewayFunctions {
             context, clientRef.hashCode(),
             Intent(SmsResultReceiver.ACTION_SMS_SENT)
                 .setPackage(context.packageName)
-                .putExtra("client_ref", clientRef),
+                .putExtra("client_ref", clientRef)
+                .putExtra("to", to),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val deliveredIntent = PendingIntent.getBroadcast(
             context, clientRef.hashCode(),
             Intent(SmsResultReceiver.ACTION_SMS_DELIVERED)
                 .setPackage(context.packageName)
-                .putExtra("client_ref", clientRef),
+                .putExtra("client_ref", clientRef)
+                .putExtra("to", to),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 

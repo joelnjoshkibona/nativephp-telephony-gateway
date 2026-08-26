@@ -31,6 +31,7 @@ class SmsResultReceiver : BroadcastReceiver() {
             else -> return
         }
         val clientRef = intent.getStringExtra("client_ref") ?: "unknown"
+        val to = intent.getStringExtra("to")
         val ok = resultCode == Activity.RESULT_OK
 
         Log.i(TAG, "onReceive: event=$event clientRef=$clientRef ok=$ok resultCode=$resultCode")
@@ -48,6 +49,7 @@ class SmsResultReceiver : BroadcastReceiver() {
                     put("event", event)
                     put("ok", ok)
                     put("result_code", resultCode)
+                    put("to", to)
                 }.toString()
 
                 val encoded = Base64.encodeToString(payload.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
