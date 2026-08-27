@@ -53,6 +53,18 @@
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.ListSims",
             "ios": "TelephonyGatewayFunctions.ListSims",
             "description": "Enumerate active SIM slots (slot, subscription_id, phone_number, operator)"
+        },
+        {
+            "name": "TelephonyGateway.CheckBatteryOptimizationExemption",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.CheckBatteryOptimizationExemption",
+            "ios": "TelephonyGatewayFunctions.CheckBatteryOptimizationExemption",
+            "description": "Whether this app is currently exempt from battery optimization (Doze/App Standby)"
+        },
+        {
+            "name": "TelephonyGateway.RequestBatteryOptimizationExemption",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.RequestBatteryOptimizationExemption",
+            "ios": "TelephonyGatewayFunctions.RequestBatteryOptimizationExemption",
+            "description": "Prompt the user with the system dialog to exempt this app from battery optimization"
         }
     ],
     "android": {
@@ -65,7 +77,8 @@
             "android.permission.FOREGROUND_SERVICE",
             "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
             "android.permission.POST_NOTIFICATIONS",
-            "android.permission.CALL_PHONE"
+            "android.permission.CALL_PHONE",
+            "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
         ],
         "repositories": [],
         "dependencies": {

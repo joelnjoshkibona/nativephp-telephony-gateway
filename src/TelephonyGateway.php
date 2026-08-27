@@ -44,6 +44,18 @@ class TelephonyGateway
         return $this->call('TelephonyGateway.ListSims', []);
     }
 
+    /** 11.91 -- whether this device is currently exempt from battery optimization. */
+    public function checkBatteryOptimizationExemption(): ?object
+    {
+        return $this->call('TelephonyGateway.CheckBatteryOptimizationExemption', []);
+    }
+
+    /** 11.91 -- launches the system's own exemption dialog; there is no silent grant. */
+    public function requestBatteryOptimizationExemption(): ?object
+    {
+        return $this->call('TelephonyGateway.RequestBatteryOptimizationExemption', []);
+    }
+
     /**
      * nativephp_call() returns the bridge function's own map serialized flat
      * (e.g. `{"sims": [...]}`, `{"launched": true}`) -- there is no `data`
