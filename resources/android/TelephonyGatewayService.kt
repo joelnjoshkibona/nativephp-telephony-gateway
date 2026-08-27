@@ -224,12 +224,12 @@ class TelephonyGatewayService : Service() {
                 val to = job.optString("to")
                 if (to.isEmpty()) return
                 val body = job.optString("body", "")
-                TelephonyGatewayFunctions.sendSmsDirect(applicationContext, to, body, id, subscriptionId)
+                TelephonyGatewayFunctions.sendSmsDirect(applicationContext, to, body, id, subscriptionId, slot)
             }
             "ussd" -> {
                 val code = job.optString("code")
                 if (code.isEmpty()) return
-                TelephonyGatewayFunctions.sendUssdDirect(applicationContext, code, id, subscriptionId)
+                TelephonyGatewayFunctions.sendUssdDirect(applicationContext, code, id, subscriptionId, slot)
             }
             else -> Log.w(TAG, "dispatchClaimedJob: unknown job type in $job")
         }

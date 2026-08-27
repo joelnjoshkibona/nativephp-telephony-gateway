@@ -59,6 +59,47 @@ object TelephonyGatewayFunctions {
     }
 
     /**
+     * 11.91 -- whether Android's battery optimization (Doze/App Standby) is
+     * currently allowed to restrict this app. A killed foreground service has
+     * no recovery path except a manual reopen or a gateway_wake push landing
+     * while the OS hasn't gone as far as fully stopping the app (see
+     * nativephp-fcm's own onMessageReceived) -- exemption is the only way to
+     * stop the OEM's own battery manager from killing the service at all.
+     */
+    class CheckBatteryOptimizationExemption(private val context: Context) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            val exempt = powerManager.isIgnoringBatteryOptimizations(context.packageName)
+            return BridgeResponse.success(mapOf("exempt" to exempt))
+        }
+    }
+
+    /**
+     * Launches the system's own exemption dialog -- there is no way to grant
+     * this silently, Android requires an explicit user tap. Uses the
+     * activity (not the bare application context) because
+     * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS starts a system Activity,
+     * which needs FLAG_ACTIVITY_NEW_TASK from a non-Activity context --
+     * avoided entirely by starting it from the activity that's already on
+     * screen. Requires the REQUEST_IGNORE_BATTERY_OPTIMIZATIONS manifest
+     * permission (normal, not runtime).
+     */
+    class RequestBatteryOptimizationExemption(private val activity: androidx.fragment.app.FragmentActivity) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            return try {
+                val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = android.net.Uri.parse("package:${activity.packageName}")
+                }
+                activity.startActivity(intent)
+                BridgeResponse.success(mapOf("launched" to true))
+            } catch (e: Exception) {
+                Log.e(TAG, "RequestBatteryOptimizationExemption failed", e)
+                BridgeResponse.error("LAUNCH_FAILED", e.message ?: "Failed to launch exemption prompt")
+            }
+        }
+    }
+
+    /**
      * Send an SMS. Synchronous only in the sense of "handed to SmsManager" --
      * the real outcome (sent/failed, later delivered) arrives asynchronously via
      * SmsResultReceiver, which reuses the same ephemeral-bridge dispatch already
@@ -120,15 +161,17 @@ object TelephonyGatewayFunctions {
      * job's own slot, resolved via ListSims/SimSlots) -- null falls back to
      * SmsManager.getDefault(), matching every pre-poll-loop caller's behavior.
      */
-    fun sendSmsDirect(context: Context, to: String, body: String, clientRef: String, subscriptionId: Int? = null) {
-        Log.i(TAG, "sendSmsDirect: to=$to clientRef=$clientRef bodyLen=${body.length} subId=$subscriptionId")
+    fun sendSmsDirect(context: Context, to: String, body: String, clientRef: String, subscriptionId: Int? = null, slot: Int? = null) {
+        Log.i(TAG, "sendSmsDirect: to=$to clientRef=$clientRef bodyLen=${body.length} subId=$subscriptionId slot=$slot")
 
+        val slotExtra = slot ?: -1
         val sentIntent = PendingIntent.getBroadcast(
             context, clientRef.hashCode(),
             Intent(SmsResultReceiver.ACTION_SMS_SENT)
                 .setPackage(context.packageName)
                 .putExtra("client_ref", clientRef)
-                .putExtra("to", to),
+                .putExtra("to", to)
+                .putExtra("slot", slotExtra),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val deliveredIntent = PendingIntent.getBroadcast(
@@ -136,7 +179,8 @@ object TelephonyGatewayFunctions {
             Intent(SmsResultReceiver.ACTION_SMS_DELIVERED)
                 .setPackage(context.packageName)
                 .putExtra("client_ref", clientRef)
-                .putExtra("to", to),
+                .putExtra("to", to)
+                .putExtra("slot", slotExtra),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -158,8 +202,8 @@ object TelephonyGatewayFunctions {
     }
 
     /** The actual sendUssdRequest call, callable directly from the poll loop or SendUssd. */
-    fun sendUssdDirect(context: Context, code: String, requestId: String, subscriptionId: Int? = null) {
-        Log.i(TAG, "sendUssdDirect: code=$code requestId=$requestId subId=$subscriptionId")
+    fun sendUssdDirect(context: Context, code: String, requestId: String, subscriptionId: Int? = null, slot: Int? = null) {
+        Log.i(TAG, "sendUssdDirect: code=$code requestId=$requestId subId=$subscriptionId slot=$slot")
 
         val telephonyManager = context.getSystemService(TelephonyManager::class.java).let {
             if (subscriptionId != null) it.createForSubscriptionId(subscriptionId) else it
@@ -168,17 +212,17 @@ object TelephonyGatewayFunctions {
 
         telephonyManager.sendUssdRequest(code, object : TelephonyManager.UssdResponseCallback() {
             override fun onReceiveUssdResponse(tm: TelephonyManager, request: String, response: CharSequence) {
-                dispatchUssdResult(context, requestId, responseText = response.toString(), failureCode = null)
+                dispatchUssdResult(context, requestId, responseText = response.toString(), failureCode = null, slot = slot)
             }
 
             override fun onReceiveUssdResponseFailed(tm: TelephonyManager, request: String, failureCode: Int) {
-                dispatchUssdResult(context, requestId, responseText = null, failureCode = "USSD_FAILURE_$failureCode")
+                dispatchUssdResult(context, requestId, responseText = null, failureCode = "USSD_FAILURE_$failureCode", slot = slot)
             }
         }, handler)
     }
 
-    private fun dispatchUssdResult(context: Context, requestId: String, responseText: String?, failureCode: String?) {
-        Log.i(TAG, "USSD result: requestId=$requestId failureCode=$failureCode")
+    private fun dispatchUssdResult(context: Context, requestId: String, responseText: String?, failureCode: String?, slot: Int? = null) {
+        Log.i(TAG, "USSD result: requestId=$requestId failureCode=$failureCode slot=$slot")
         EphemeralDispatch.post {
             try {
                 val bridge = PHPBridge(context.applicationContext)
@@ -189,6 +233,7 @@ object TelephonyGatewayFunctions {
                     put("request_id", requestId)
                     put("response_text", responseText)
                     put("failure_code", failureCode)
+                    put("slot", slot ?: JSONObject.NULL)
                 }.toString()
                 val encoded = Base64.encodeToString(payload.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
                 val command = "telephony:ussd-result --payload=$encoded"
