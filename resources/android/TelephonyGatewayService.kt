@@ -78,11 +78,22 @@ class TelephonyGatewayService : Service() {
                 EphemeralDispatch.post { checkForNewMissedCalls() }
             }
         }
-        contentResolver.registerContentObserver(CallLog.Calls.CONTENT_URI, true, observer!!)
-        Log.i(TAG, "onCreate: foreground service started, CallLog observer registered")
-
-        // Catch anything that landed before the observer was registered.
-        EphemeralDispatch.post { checkForNewMissedCalls() }
+        // The Vue layer requests READ_CALL_LOG before ever starting this
+        // service (see useGatewayEnrollment.ts), but a user can still revoke
+        // it afterward from Settings -- registerContentObserver() throws
+        // SecurityException immediately in that case, same as any other
+        // CallLogProvider access, and an unguarded throw here previously
+        // crashed the whole app right after a successful enroll (confirmed
+        // live). Missed-call detection is degraded, not fatal, without it --
+        // SMS/USSD claim-and-send has no dependency on CallLog at all.
+        try {
+            contentResolver.registerContentObserver(CallLog.Calls.CONTENT_URI, true, observer!!)
+            Log.i(TAG, "onCreate: foreground service started, CallLog observer registered")
+            // Catch anything that landed before the observer was registered.
+            EphemeralDispatch.post { checkForNewMissedCalls() }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "onCreate: READ_CALL_LOG not granted -- missed-call detection disabled", e)
+        }
 
         schedulePollTick(0)
         scheduleHeartbeatTick(0)
