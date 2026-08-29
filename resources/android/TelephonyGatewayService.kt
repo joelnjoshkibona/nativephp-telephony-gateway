@@ -166,7 +166,17 @@ class TelephonyGatewayService : Service() {
                     nextPollSeconds = parsed.optLong("next_poll_seconds", FALLBACK_POLL_SECONDS)
                     val jobs = parsed.optJSONArray("jobs") ?: JSONArray()
                     for (i in 0 until jobs.length()) {
-                        dispatchClaimedJob(jobs.getJSONObject(i), slotToSubscription)
+                        // One job's own exception (confirmed live: sendUssdRequest
+                        // throws on an emulator, no real carrier to answer) must not
+                        // abort the rest of this batch -- an unguarded loop here
+                        // silently stranded every SMS queued alongside a failing
+                        // USSD job in the same poll tick, "claimed" until their own
+                        // lease expired.
+                        try {
+                            dispatchClaimedJob(jobs.getJSONObject(i), slotToSubscription)
+                        } catch (e: Throwable) {
+                            Log.e(TAG, "dispatchClaimedJob FAILED for job index $i", e)
+                        }
                     }
                 }
             } catch (e: Throwable) {
