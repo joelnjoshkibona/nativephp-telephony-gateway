@@ -20,16 +20,41 @@ object SimSlots {
         val operator: String?,
     )
 
+    /**
+     * SubscriptionManager.from(context) is deprecated since API 26 in favor
+     * of the typed getSystemService() overload -- behavior-identical, no
+     * permission change, safe at this plugin's own minSdk 26 (the typed
+     * overload has existed since API 23).
+     */
+    private fun subscriptionManager(context: Context): SubscriptionManager? =
+        context.getSystemService(SubscriptionManager::class.java)
+
+    /**
+     * SubscriptionInfo.number is deprecated since API 33 in favor of
+     * SubscriptionManager.getPhoneNumber(subId) -- but that replacement needs
+     * API 33+ (this plugin's minSdk is 26) AND a new READ_PHONE_NUMBERS
+     * permission neither this plugin nor any consuming app currently
+     * requests. The field is already a best-effort, nullable, display-only
+     * value (never used for routing/business logic -- see enrollment's own
+     * handling), so adding a new privacy-sensitive permission just to
+     * silence this warning isn't worth it. Suppression scoped to this one
+     * property access, not the whole file, so any other deprecation here
+     * still surfaces normally.
+     */
+    @Suppress("DEPRECATION")
+    private fun phoneNumberOf(info: android.telephony.SubscriptionInfo): String? =
+        info.number?.takeIf { it.isNotBlank() }
+
     /** Every entry this returns is, by definition, a currently-present SIM. */
     fun listActive(context: Context): List<Info> {
         return try {
-            val manager = SubscriptionManager.from(context)
+            val manager = subscriptionManager(context) ?: return emptyList()
             val infos = manager.activeSubscriptionInfoList ?: emptyList()
             infos.map {
                 Info(
                     slot = it.simSlotIndex,
                     subscriptionId = it.subscriptionId,
-                    phoneNumber = it.number?.takeIf { n -> n.isNotBlank() },
+                    phoneNumber = phoneNumberOf(it),
                     operator = it.carrierName?.toString(),
                 )
             }
@@ -46,8 +71,8 @@ object SimSlots {
         if (subscriptionId < 0) return null
 
         return try {
-            SubscriptionManager.from(context)
-                .getActiveSubscriptionInfo(subscriptionId)
+            subscriptionManager(context)
+                ?.getActiveSubscriptionInfo(subscriptionId)
                 ?.simSlotIndex
         } catch (e: Throwable) {
             Log.w(TAG, "slotForSubscriptionId FAILED for subId=$subscriptionId", e)
