@@ -309,7 +309,8 @@ class TelephonyGatewayService : Service() {
             CallLog.Calls._ID,
             CallLog.Calls.NUMBER,
             CallLog.Calls.DATE,
-            CallLog.Calls.TYPE
+            CallLog.Calls.TYPE,
+            CallLog.Calls.PHONE_ACCOUNT_ID
         )
         val selection = "${CallLog.Calls._ID} > ? AND ${CallLog.Calls.TYPE} = ?"
         val selectionArgs = arrayOf(lastId.toString(), CallLog.Calls.MISSED_TYPE.toString())
@@ -326,13 +327,23 @@ class TelephonyGatewayService : Service() {
                 val idCol = cursor.getColumnIndexOrThrow(CallLog.Calls._ID)
                 val numberCol = cursor.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
                 val dateCol = cursor.getColumnIndexOrThrow(CallLog.Calls.DATE)
+                val phoneAccountIdCol = cursor.getColumnIndex(CallLog.Calls.PHONE_ACCOUNT_ID)
 
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idCol)
                     val number = cursor.getString(numberCol) ?: "unknown"
                     val date = cursor.getLong(dateCol)
+                    // On stock AOSP telephony, CallLog's own PHONE_ACCOUNT_ID for a SIM-based
+                    // call is the subscription id as a string -- not guaranteed on every OEM,
+                    // so a non-numeric or missing value degrades to null, same as
+                    // SimSlots.slotForSubscriptionId()'s own null-safe contract.
+                    val subscriptionId = if (phoneAccountIdCol >= 0) {
+                        cursor.getString(phoneAccountIdCol)?.toIntOrNull()
+                    } else {
+                        null
+                    }
 
-                    dispatchMissedCall(id, number, date)
+                    dispatchMissedCall(id, number, date, subscriptionId)
                     if (id > maxId) maxId = id
                 }
             }
@@ -346,8 +357,15 @@ class TelephonyGatewayService : Service() {
         }
     }
 
-    private fun dispatchMissedCall(callLogId: Long, number: String, occurredAt: Long) {
-        Log.i(TAG, "dispatchMissedCall: id=$callLogId from=$number — dispatching to ephemeral PHP")
+    private fun dispatchMissedCall(callLogId: Long, number: String, occurredAt: Long, subscriptionId: Int?) {
+        // Resolved from CallLog's own PHONE_ACCOUNT_ID via SimSlots -- the same
+        // subscription-id-to-slot lookup SmsReceivedReceiver already uses for
+        // inbound SMS. Falls back to 0 only when the subscription id is absent
+        // or no longer maps to an active SIM (e.g. a call log entry from a SIM
+        // that's since been removed) -- degraded, not fatal, matching this
+        // plugin's own established convention elsewhere.
+        val slot = subscriptionId?.let { SimSlots.slotForSubscriptionId(applicationContext, it) } ?: 0
+        Log.i(TAG, "dispatchMissedCall: id=$callLogId from=$number subscriptionId=$subscriptionId slot=$slot — dispatching to ephemeral PHP")
 
         try {
             val bridge = PHPBridge(applicationContext)
@@ -358,7 +376,7 @@ class TelephonyGatewayService : Service() {
                 put("device_call_uid", callLogId.toString())
                 put("caller_number", number)
                 put("occurred_at", occurredAt)
-                put("slot", 0) // TODO: resolve real slot via PHONE_ACCOUNT_ID -> SubscriptionManager
+                put("slot", slot)
                 put("ring_duration_seconds", JSONObject.NULL)
             }.toString()
 
