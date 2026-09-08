@@ -215,15 +215,22 @@ class TelephonyGatewayService : Service() {
                 val bootstrapPath = "${bridge.getLaravelPath()}/bootstrap/android/ephemeral.php"
                 bridge.nativeEphemeralBoot(bootstrapPath)
 
-                val command = if (!fcmToken.isNullOrEmpty()) {
+                val battery = DeviceTelemetry.readBattery(applicationContext)
+                val networkType = DeviceTelemetry.readNetworkType(applicationContext)
+
+                val commandParts = mutableListOf("telephony:heartbeat")
+                if (!fcmToken.isNullOrEmpty()) {
                     val encodedToken = android.util.Base64.encodeToString(
                         fcmToken.toByteArray(Charsets.UTF_8),
                         android.util.Base64.NO_WRAP
                     )
-                    "telephony:heartbeat --fcm-token=$encodedToken"
-                } else {
-                    "telephony:heartbeat"
+                    commandParts.add("--fcm-token=$encodedToken")
                 }
+                battery.percent?.let { commandParts.add("--battery-pct=$it") }
+                battery.isCharging?.let { commandParts.add("--is-charging=${if (it) 1 else 0}") }
+                commandParts.add("--network-type=$networkType")
+
+                val command = commandParts.joinToString(" ")
                 Log.i(TAG, "calling nativeEphemeralArtisan: $command")
                 bridge.nativeEphemeralArtisan(command)
             } catch (e: Throwable) {
