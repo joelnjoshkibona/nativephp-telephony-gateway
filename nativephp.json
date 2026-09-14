@@ -18,8 +18,7 @@
     "repository": "",
     "funding": [],
     "platforms": [
-        "android",
-        "ios"
+        "android"
     ],
     "icon": "resources/icon.png",
     "screenshots": [],
@@ -27,43 +26,36 @@
         {
             "name": "TelephonyGateway.StartService",
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.StartService",
-            "ios": "TelephonyGatewayFunctions.StartService",
             "description": "Start the persistent foreground service (CallLog observer, SMS receiver anchor)"
         },
         {
             "name": "TelephonyGateway.StopService",
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.StopService",
-            "ios": "TelephonyGatewayFunctions.StopService",
             "description": "Stop the persistent foreground service"
         },
         {
             "name": "TelephonyGateway.SendSms",
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.SendSms",
-            "ios": "TelephonyGatewayFunctions.SendSms",
             "description": "Send an SMS; outcome arrives later via telephony:sms-result"
         },
         {
             "name": "TelephonyGateway.SendUssd",
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.SendUssd",
-            "ios": "TelephonyGatewayFunctions.SendUssd",
             "description": "Dial a USSD code; response arrives later via telephony:ussd-result"
         },
         {
             "name": "TelephonyGateway.ListSims",
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.ListSims",
-            "ios": "TelephonyGatewayFunctions.ListSims",
             "description": "Enumerate active SIM slots (slot, subscription_id, phone_number, operator)"
         },
         {
             "name": "TelephonyGateway.CheckBatteryOptimizationExemption",
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.CheckBatteryOptimizationExemption",
-            "ios": "TelephonyGatewayFunctions.CheckBatteryOptimizationExemption",
             "description": "Whether this app is currently exempt from battery optimization (Doze/App Standby)"
         },
         {
             "name": "TelephonyGateway.RequestBatteryOptimizationExemption",
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.RequestBatteryOptimizationExemption",
-            "ios": "TelephonyGatewayFunctions.RequestBatteryOptimizationExemption",
             "description": "Prompt the user with the system dialog to exempt this app from battery optimization"
         }
     ],
