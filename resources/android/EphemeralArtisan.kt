@@ -70,30 +70,43 @@ object EphemeralArtisan {
                 return Result(false, null, "command exceeds the ephemeral runtime's eval buffer")
             }
 
-            // A service or receiver can start the process with no screen (boot, app update, an SMS): then nothing has set
-            // the PHP environment (COMPOSER_AUTOLOADER_PATH, LARAVEL_BOOTSTRAP_PATH, the database …) or unpacked a new
-            // bundle, and the bootstrap's require fails silently. NativePHP's background entry does both, and nothing
-            // when the app's own runtime is already up. Once per process, on this (the only) ephemeral thread.
-            if (!environmentReady) {
-                com.nativephp.mobile.bridge.LaravelEnvironment(context.applicationContext).initializeForBackground()
-                environmentReady = true
-            }
-            val bridge = PHPBridge(context.applicationContext)
-            val bootstrapPath = bootstrapScript(bridge.getLaravelPath())
-                ?: return Result(false, null, "no PHP bootstrap found (bootstrap/android/ephemeral.php or NativePHP's persistent.php)")
-            val boot = bridge.nativeEphemeralBoot(bootstrapPath)
-            if (boot != 0) {
-                Log.e(TAG, "$command: nativeEphemeralBoot returned $boot")
-                return Result(false, null, "ephemeral boot returned $boot")
-            }
-
-            Log.i(TAG, "calling nativeEphemeralArtisan: $command")
-            val output = bridge.nativeEphemeralArtisan(full)
-            if (GatewayRules.artisanOutputSignalsFailure(output)) {
-                Log.e(TAG, "$command failed: $output")
-                Result(false, output, output.trim())
-            } else {
-                Result(true, output, null)
+            // One PHP start at a time in this process. NativePHP starts the screens' PHP ("persistent") while holding
+            // its LaravelEnvironment.extractionLock and does not check for a background ("ephemeral") interpreter that
+            // started cold: two php_embed_init() calls at once, or the screens starting over a cold interpreter, crash
+            // the app (SIGSEGV in php_tsrm_startup). So, under that same lock: start, run the command, shut down.
+            // With the screens' PHP up, the start is NativePHP's cheap "hot" path; without it, a cold start that is
+            // gone again before the screens can begin.
+            processPhpLock().lock()
+            try {
+                // Started with no screen (boot, app update, an SMS), nothing has set PHP's environment
+                // (COMPOSER_AUTOLOADER_PATH, LARAVEL_BOOTSTRAP_PATH …) or unpacked a new bundle: NativePHP's background
+                // entry does both, and nothing when the screens' PHP is already up. Once per process.
+                if (!environmentReady) {
+                    com.nativephp.mobile.bridge.LaravelEnvironment(context.applicationContext).initializeForBackground()
+                    environmentReady = true
+                }
+                val bridge = PHPBridge(context.applicationContext)
+                val bootstrapPath = bootstrapScript(bridge.getLaravelPath())
+                    ?: return Result(false, null, "no PHP bootstrap found (bootstrap/android/ephemeral.php or NativePHP's persistent.php)")
+                val boot = bridge.nativeEphemeralBoot(bootstrapPath)
+                if (boot != 0) {
+                    Log.e(TAG, "$command: nativeEphemeralBoot returned $boot")
+                    return Result(false, null, "ephemeral boot returned $boot")
+                }
+                try {
+                    Log.i(TAG, "calling nativeEphemeralArtisan: $command")
+                    val output = bridge.nativeEphemeralArtisan(full)
+                    if (GatewayRules.artisanOutputSignalsFailure(output)) {
+                        Log.e(TAG, "$command failed: $output")
+                        Result(false, output, output.trim())
+                    } else {
+                        Result(true, output, null)
+                    }
+                } finally {
+                    bridge.nativeEphemeralShutdown()
+                }
+            } finally {
+                processPhpLock().unlock()
             }
         } catch (e: Throwable) {
             Log.e(TAG, "$command threw", e)
@@ -143,6 +156,25 @@ object EphemeralArtisan {
      * initialized with no autoloader, and every command would fail until the process dies.
      */
     @Volatile private var environmentReady = false
+
+    @Volatile private var phpLock: java.util.concurrent.locks.ReentrantLock? = null
+
+    /**
+     * NativePHP's own LaravelEnvironment.extractionLock (internal in v4, private in v3, so read by reflection): the lock
+     * its persistent boot holds. If it cannot be found, a lock of our own, which still keeps this plugin's starts apart.
+     */
+    private fun processPhpLock(): java.util.concurrent.locks.ReentrantLock {
+        phpLock?.let { return it }
+        val found = try {
+            val cls = Class.forName("com.nativephp.mobile.bridge.LaravelEnvironment")
+            val field = cls.getDeclaredField("extractionLock").apply { isAccessible = true }
+            field.get(null) as? java.util.concurrent.locks.ReentrantLock
+        } catch (e: Throwable) {
+            Log.w(TAG, "NativePHP's extraction lock not found; using the plugin's own", e)
+            null
+        }
+        return (found ?: java.util.concurrent.locks.ReentrantLock()).also { phpLock = it }
+    }
 
     private fun bootstrapScript(laravelPath: String): String? {
         val candidates = listOf(
