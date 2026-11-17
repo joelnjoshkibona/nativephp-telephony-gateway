@@ -70,6 +70,14 @@ object EphemeralArtisan {
                 return Result(false, null, "command exceeds the ephemeral runtime's eval buffer")
             }
 
+            // A service or receiver can start the process with no screen (boot, app update, an SMS): then nothing has set
+            // the PHP environment (COMPOSER_AUTOLOADER_PATH, LARAVEL_BOOTSTRAP_PATH, the database …) or unpacked a new
+            // bundle, and the bootstrap's require fails silently. NativePHP's background entry does both, and nothing
+            // when the app's own runtime is already up. Once per process, on this (the only) ephemeral thread.
+            if (!environmentReady) {
+                com.nativephp.mobile.bridge.LaravelEnvironment(context.applicationContext).initializeForBackground()
+                environmentReady = true
+            }
             val bridge = PHPBridge(context.applicationContext)
             val bootstrapPath = bootstrapScript(bridge.getLaravelPath())
                 ?: return Result(false, null, "no PHP bootstrap found (bootstrap/android/ephemeral.php or NativePHP's persistent.php)")
@@ -134,6 +142,8 @@ object EphemeralArtisan {
      * Runtime::boot, which is all the commands need). Never boots from a missing file: the runtime would be marked
      * initialized with no autoloader, and every command would fail until the process dies.
      */
+    @Volatile private var environmentReady = false
+
     private fun bootstrapScript(laravelPath: String): String? {
         val candidates = listOf(
             "$laravelPath/bootstrap/android/ephemeral.php",
