@@ -1,7 +1,10 @@
 package com.blutrixx.plugins.nativephp_telephony_gateway
 
 import android.content.Context
+import android.os.Build
+import android.telecom.TelecomManager
 import android.telephony.SubscriptionManager
+import android.telephony.TelephonyManager
 import android.util.Log
 
 /**
@@ -79,4 +82,59 @@ object SimSlots {
             null
         }
     }
+
+    /**
+     * Snapshot for mapping CallLog's PHONE_ACCOUNT_ID to a subscription id --
+     * built once per CallLog scan, then [GatewayRules.matchPhoneAccount]
+     * decides (exactly one match, or null = drop).
+     */
+    class PhoneAccountResolver internal constructor(
+        private val telecomMap: Map<String, Set<Int>>,
+        private val active: List<Pair<Int, String?>>,
+    ) {
+        fun subscriptionFor(phoneAccountId: String?): Int? =
+            GatewayRules.matchPhoneAccount(
+                phoneAccountId,
+                phoneAccountId?.trim()?.let { telecomMap[it] } ?: emptySet(),
+                active,
+            )
+    }
+
+    fun phoneAccountResolver(context: Context): PhoneAccountResolver {
+        val telecomMap = mutableMapOf<String, MutableSet<Int>>()
+        // TelephonyManager.getSubscriptionId(PhoneAccountHandle) is API 30+;
+        // below that only the direct subscription-id / ICCID comparison applies.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val telecom = context.getSystemService(TelecomManager::class.java)
+                val telephony = context.getSystemService(TelephonyManager::class.java)
+                if (telecom != null && telephony != null) {
+                    for (handle in telecom.callCapablePhoneAccounts) {
+                        val subId = telephony.getSubscriptionId(handle)
+                        if (subId >= 0) telecomMap.getOrPut(handle.id) { mutableSetOf() }.add(subId)
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "phoneAccountResolver: telecom mapping unavailable", e)
+            }
+        }
+
+        val active = try {
+            subscriptionManager(context)?.activeSubscriptionInfoList.orEmpty().map {
+                it.subscriptionId to iccIdOf(it)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "phoneAccountResolver: active subscriptions unavailable", e)
+            emptyList()
+        }
+        return PhoneAccountResolver(telecomMap, active)
+    }
+
+    /** Empty for non-privileged apps on API 29+; only useful on older releases where PHONE_ACCOUNT_ID was the ICCID. */
+    private fun iccIdOf(info: android.telephony.SubscriptionInfo): String? =
+        try {
+            info.iccId?.takeIf { it.isNotBlank() }
+        } catch (e: Throwable) {
+            null
+        }
 }

@@ -66,6 +66,19 @@ export async function listSims() {
 }
 
 /**
+ * Replace the watched SIM set. Inbound SMS / missed calls on any other SIM are
+ * dropped natively. An empty array watches nothing. Resolves {subscription_ids}.
+ */
+export async function setWatchedSims(subscriptionIds) {
+    return bridgeCall('TelephonyGateway.SetWatchedSims', { subscription_ids: subscriptionIds });
+}
+
+/** Resolves {subscription_ids: number[]}. */
+export async function getWatchedSims() {
+    return bridgeCall('TelephonyGateway.GetWatchedSims');
+}
+
+/**
  * TelephonyGateway namespace object
  */
 export const telephonyGateway = {
@@ -73,7 +86,9 @@ export const telephonyGateway = {
     stopService,
     sendSms,
     sendUssd,
-    listSims
+    listSims,
+    setWatchedSims,
+    getWatchedSims
 };
 
 export default telephonyGateway;

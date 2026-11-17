@@ -44,6 +44,26 @@ class TelephonyGateway
         return $this->call('TelephonyGateway.ListSims', []);
     }
 
+    /**
+     * Replace the set of watched SIMs (subscription ids). Inbound SMS and
+     * missed calls on any other SIM never leave Kotlin. An empty list
+     * watches nothing. Returns {subscription_ids: int[]}.
+     *
+     * @param  list<int>  $subscriptionIds
+     */
+    public function setWatchedSims(array $subscriptionIds): ?object
+    {
+        return $this->call('TelephonyGateway.SetWatchedSims', [
+            'subscription_ids' => array_values(array_map('intval', $subscriptionIds)),
+        ]);
+    }
+
+    /** Returns {subscription_ids: int[]}. */
+    public function getWatchedSims(): ?object
+    {
+        return $this->call('TelephonyGateway.GetWatchedSims', []);
+    }
+
     /** 11.91 -- whether this device is currently exempt from battery optimization. */
     public function checkBatteryOptimizationExemption(): ?object
     {

@@ -65,6 +65,16 @@
             "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.RequestBatteryOptimizationExemption",
             "ios": "TelephonyGatewayFunctions.RequestBatteryOptimizationExemption",
             "description": "Prompt the user with the system dialog to exempt this app from battery optimization"
+        },
+        {
+            "name": "TelephonyGateway.SetWatchedSims",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.SetWatchedSims",
+            "description": "Replace the watched SIM set {subscription_ids: int[]}; inbound SMS/missed calls on any other SIM are dropped natively. Empty = nothing watched"
+        },
+        {
+            "name": "TelephonyGateway.GetWatchedSims",
+            "android": "com.blutrixx.plugins.nativephp_telephony_gateway.TelephonyGatewayFunctions.GetWatchedSims",
+            "description": "Return the watched SIM set {subscription_ids: int[]}"
         }
     ],
     "android": {
@@ -78,7 +88,8 @@
             "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
             "android.permission.POST_NOTIFICATIONS",
             "android.permission.CALL_PHONE",
-            "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+            "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+            "android.permission.RECEIVE_BOOT_COMPLETED"
         ],
         "repositories": [],
         "dependencies": {
@@ -110,6 +121,18 @@
                         "action": [
                             "com.blutrixx.plugins.nativephp_telephony_gateway.SMS_SENT",
                             "com.blutrixx.plugins.nativephp_telephony_gateway.SMS_DELIVERED"
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": ".BootReceiver",
+                "exported": true,
+                "intent_filters": [
+                    {
+                        "action": [
+                            "android.intent.action.BOOT_COMPLETED",
+                            "android.intent.action.MY_PACKAGE_REPLACED"
                         ]
                     }
                 ]

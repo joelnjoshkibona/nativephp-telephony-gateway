@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
 import android.util.Log
-import com.nativephp.mobile.bridge.PHPBridge
 import org.json.JSONObject
 
 /**
@@ -24,10 +23,23 @@ class SmsReceivedReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "TelephonyGateway.SmsReceived"
+        private const val EXTRA_SUBSCRIPTION_LEGACY = "subscription"
+        private const val EXTRA_SUBSCRIPTION_INDEX = "android.telephony.extra.SUBSCRIPTION_INDEX"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
+            return
+        }
+
+        // Privacy gate, FIRST: an SMS on a SIM that is not explicitly watched
+        // (or whose SIM cannot be determined) is dropped here -- before the
+        // PDUs are even parsed, and without logging anything about it.
+        val subscriptionId = GatewayRules.resolveSmsSubscription(
+            intExtraOrNull(intent, EXTRA_SUBSCRIPTION_LEGACY),
+            intExtraOrNull(intent, EXTRA_SUBSCRIPTION_INDEX),
+        )
+        if (subscriptionId == null || !GatewayRules.isWatched(subscriptionId, GatewayPrefs.watchedSims(context))) {
             return
         }
 
@@ -42,55 +54,37 @@ class SmsReceivedReceiver : BroadcastReceiver() {
         val receivedAt = messages[0].timestampMillis
         // The OS never assigns this a provider row id before this receiver runs
         // (that only happens once inserted into the Sms ContentProvider, not
-        // guaranteed here for a non-default-SMS-app) -- a stable hash of the
-        // message's own identifying fields is 14.22's own documented fallback.
-        val deviceMessageUid = (from + body + receivedAt.toString()).hashCode().toString()
-        val subscriptionId = intent.getIntExtra("subscription", -1)
+        // guaranteed here for a non-default-SMS-app) -- a sha256 of the
+        // message's own identifying fields stands in (see GatewayRules.inboundSmsUid).
+        val deviceMessageUid = GatewayRules.inboundSmsUid(subscriptionId, from, body, receivedAt)
         val slot = SimSlots.slotForSubscriptionId(context, subscriptionId) ?: 0
 
-        Log.i(TAG, "onReceive: SMS from=$from bodyLen=${body.length} — dispatching to ephemeral PHP")
+        Log.i(TAG, "onReceive: SMS subId=$subscriptionId slot=$slot bodyLen=${body.length} -- dispatching to ephemeral PHP")
 
-        val pendingResult = goAsync()
-        EphemeralDispatch.post {
-            try {
-                val appContext = context.applicationContext
-                val bridge = PHPBridge(appContext)
-                val bootstrapPath = "${bridge.getLaravelPath()}/bootstrap/android/ephemeral.php"
-
-                Log.i(TAG, "booting ephemeral runtime: $bootstrapPath")
-                bridge.nativeEphemeralBoot(bootstrapPath)
-
-                val payload = JSONObject().apply {
-                    put("device_message_uid", deviceMessageUid)
-                    put("from", from)
-                    put("body", body)
-                    put("slot", slot)
-                    put("received_at", receivedAt)
-                }.toString()
-
-                // Runtime::artisan() splits the command with str_getcsv($command, ' ', '"', '\\')
-                // -- PHP's CSV escape handling is notoriously inconsistent with embedded
-                // quotes/backslashes (confirmed live: a \"-escaped JSON string came back
-                // "Not enough arguments", str_getcsv silently mis-split it). Base64 has no
-                // spaces, quotes, or backslashes, so it can't collide with that parser at all.
-                val encoded = android.util.Base64.encodeToString(
-                    payload.toByteArray(Charsets.UTF_8),
-                    android.util.Base64.NO_WRAP
-                )
-                // --payload=, not a positional argument -- Runtime::artisan()'s
-                // parser only correctly binds `--key=value` tokens to
-                // Artisan::call()'s expected shape; see TelephonySmsReceivedCommand's
-                // own docblock for the confirmed vendor bug this works around.
-                val command = "telephony:sms-received --payload=$encoded"
-
-                Log.i(TAG, "calling nativeEphemeralArtisan: $command")
-                val result = bridge.nativeEphemeralArtisan(command)
-                Log.i(TAG, "ephemeral artisan result: $result")
-            } catch (e: Throwable) {
-                Log.e(TAG, "SPIKE FAILED: headless bridge threw", e)
-            } finally {
-                pendingResult.finish()
-            }
+        val payload = JSONObject().apply {
+            put("device_message_uid", deviceMessageUid)
+            put("from", from)
+            put("body", body)
+            put("slot", slot)
+            put("received_at", receivedAt)
+            put("subscription_id", subscriptionId)
         }
+
+        // --payload=, not a positional argument -- Runtime::artisan()'s
+        // parser only correctly binds `--key=value` tokens; see
+        // TelephonySmsReceivedCommand's own docblock in the host app.
+        val pendingResult = goAsync()
+        EphemeralArtisan.post(context, "telephony:sms-received", payload) { result ->
+            Log.i(TAG, "telephony:sms-received ok=${result.ok}")
+            pendingResult.finish()
+        }
+    }
+
+    /** Null when absent; tolerates the extra being stored as Int or Long. */
+    private fun intExtraOrNull(intent: Intent, key: String): Int? {
+        val extras = intent.extras ?: return null
+        if (!extras.containsKey(key)) return null
+        @Suppress("DEPRECATION")
+        return (extras.get(key) as? Number)?.toInt()
     }
 }

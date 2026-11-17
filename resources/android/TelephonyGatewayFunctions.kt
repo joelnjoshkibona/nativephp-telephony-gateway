@@ -3,25 +3,28 @@ package com.blutrixx.plugins.nativephp_telephony_gateway
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.telephony.SmsManager
 import android.telephony.TelephonyManager
-import android.util.Base64
 import android.util.Log
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.bridge.BridgeResponse
-import com.nativephp.mobile.bridge.PHPBridge
+import org.json.JSONArray
 import org.json.JSONObject
 
 object TelephonyGatewayFunctions {
 
     private const val TAG = "TelephonyGateway.Functions"
+    private const val USSD_TIMEOUT_MILLIS = 120_000L
 
     /** Starts the persistent foreground service hosting the CallLog observer + poll loop. */
     class StartService(private val context: Context) : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            // Read by BootReceiver: restart on boot/app update only while set.
+            GatewayPrefs.setShouldRun(context, true)
             val intent = Intent(context, TelephonyGatewayService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -34,8 +37,51 @@ object TelephonyGatewayFunctions {
 
     class StopService(private val context: Context) : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            GatewayPrefs.setShouldRun(context, false)
             context.stopService(Intent(context, TelephonyGatewayService::class.java))
             return BridgeResponse.success(mapOf("running" to false))
+        }
+    }
+
+    /**
+     * Replaces the set of watched SIMs. Inbound SMS and missed calls on any
+     * other SIM (or on a SIM that cannot be determined) are dropped in Kotlin
+     * before reaching PHP, logs or storage. An empty list watches nothing.
+     * Params: {subscription_ids: int[]}. Returns {subscription_ids: int[]}.
+     */
+    class SetWatchedSims(private val context: Context) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val raw = parameters["subscription_ids"]
+                ?: return BridgeResponse.error("missing_subscription_ids", "subscription_ids is required")
+            val items: List<Any?> = when (raw) {
+                is JSONArray -> (0 until raw.length()).map { raw.opt(it) }
+                is List<*> -> raw
+                is Array<*> -> raw.toList()
+                else -> return BridgeResponse.error("invalid_subscription_ids", "subscription_ids must be an array of integers")
+            }
+            val ids = mutableSetOf<Int>()
+            for (item in items) {
+                val id = when (item) {
+                    is Int -> item
+                    is Long -> if (item in 0..Int.MAX_VALUE.toLong()) item.toInt() else null
+                    is Number -> item.toDouble().let { d -> if (d == Math.floor(d) && d >= 0 && d <= Int.MAX_VALUE) d.toInt() else null }
+                    is String -> item.trim().toIntOrNull()
+                    else -> null
+                }
+                if (id == null || id < 0) {
+                    return BridgeResponse.error("invalid_subscription_ids", "subscription_ids must be non-negative integers")
+                }
+                ids.add(id)
+            }
+            GatewayPrefs.setWatchedSims(context, ids)
+            return BridgeResponse.success(mapOf("subscription_ids" to GatewayPrefs.watchedSims(context).sorted()))
+        }
+    }
+
+    /** Returns {subscription_ids: int[]} -- empty when nothing is watched. */
+    class GetWatchedSims(private val context: Context) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            return BridgeResponse.success(mapOf("subscription_ids" to GatewayPrefs.watchedSims(context).sorted()))
         }
     }
 
@@ -162,88 +208,156 @@ object TelephonyGatewayFunctions {
      * SmsManager.getDefault(), matching every pre-poll-loop caller's behavior.
      */
     fun sendSmsDirect(context: Context, to: String, body: String, clientRef: String, subscriptionId: Int? = null, slot: Int? = null) {
-        Log.i(TAG, "sendSmsDirect: to=$to clientRef=$clientRef bodyLen=${body.length} subId=$subscriptionId slot=$slot")
+        Log.i(TAG, "sendSmsDirect: clientRef=$clientRef bodyLen=${body.length} subId=$subscriptionId slot=$slot")
 
-        val slotExtra = slot ?: -1
-        val sentIntent = PendingIntent.getBroadcast(
-            context, clientRef.hashCode(),
-            Intent(SmsResultReceiver.ACTION_SMS_SENT)
-                .setPackage(context.packageName)
-                .putExtra("client_ref", clientRef)
-                .putExtra("to", to)
-                .putExtra("slot", slotExtra),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val deliveredIntent = PendingIntent.getBroadcast(
-            context, clientRef.hashCode(),
-            Intent(SmsResultReceiver.ACTION_SMS_DELIVERED)
-                .setPackage(context.packageName)
-                .putExtra("client_ref", clientRef)
-                .putExtra("to", to)
-                .putExtra("slot", slotExtra),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        // Unique per call, so callbacks of a retried message (same clientRef)
+        // never merge into the previous attempt's aggregate.
+        val attempt = java.util.UUID.randomUUID().toString()
+        var partCount = 1
+        try {
+            @Suppress("DEPRECATION")
+            val smsManager = if (subscriptionId != null) {
+                SmsManager.getSmsManagerForSubscriptionId(subscriptionId)
+            } else {
+                SmsManager.getDefault()
+            }
 
-        @Suppress("DEPRECATION")
-        val smsManager = if (subscriptionId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-            SmsManager.getSmsManagerForSubscriptionId(subscriptionId)
-        } else {
-            SmsManager.getDefault()
-        }
+            val parts = smsManager.divideMessage(body)
+            partCount = maxOf(parts.size, 1)
 
-        val parts = smsManager.divideMessage(body)
-        if (parts.size > 1) {
-            val sentIntents = ArrayList<PendingIntent>().apply { repeat(parts.size) { add(sentIntent) } }
-            val deliveredIntents = ArrayList<PendingIntent>().apply { repeat(parts.size) { add(deliveredIntent) } }
-            smsManager.sendMultipartTextMessage(to, null, parts, sentIntents, deliveredIntents)
-        } else {
-            smsManager.sendTextMessage(to, null, body, sentIntent, deliveredIntent)
+            val sentIntents = ArrayList<PendingIntent>()
+            val deliveredIntents = ArrayList<PendingIntent>()
+            for (part in 0 until partCount) {
+                sentIntents.add(resultIntent(context, SmsResultReceiver.ACTION_SMS_SENT, clientRef, attempt, part, partCount, to, slot, mutable = false))
+                // Mutable: the system fills the status-report PDU ("pdu"/"format")
+                // into the delivered intent -- an IMMUTABLE PendingIntent drops
+                // that fill-in, leaving no way to tell a failed delivery apart.
+                deliveredIntents.add(resultIntent(context, SmsResultReceiver.ACTION_SMS_DELIVERED, clientRef, attempt, part, partCount, to, slot, mutable = true))
+            }
+
+            if (partCount > 1) {
+                smsManager.sendMultipartTextMessage(to, null, parts, sentIntents, deliveredIntents)
+            } else {
+                smsManager.sendTextMessage(to, null, body, sentIntents[0], deliveredIntents[0])
+            }
+        } catch (e: Throwable) {
+            // Never handed to the radio: report the send as failed now instead
+            // of leaving the job claimed until its lease expires.
+            Log.e(TAG, "sendSmsDirect FAILED for clientRef=$clientRef", e)
+            SmsResultReceiver.postReport(
+                context,
+                SmsResultReceiver.payload(
+                    clientRef, "sent", false, SmsResultReceiver.RESULT_ERROR_GENERIC_FAILURE, to, slot,
+                    partCount, null, null, e.message ?: e.javaClass.simpleName
+                )
+            )
         }
     }
 
-    /** The actual sendUssdRequest call, callable directly from the poll loop or SendUssd. */
-    fun sendUssdDirect(context: Context, code: String, requestId: String, subscriptionId: Int? = null, slot: Int? = null) {
-        Log.i(TAG, "sendUssdDirect: code=$code requestId=$requestId subId=$subscriptionId slot=$slot")
-
-        val telephonyManager = context.getSystemService(TelephonyManager::class.java).let {
-            if (subscriptionId != null) it.createForSubscriptionId(subscriptionId) else it
+    private fun resultIntent(
+        context: Context,
+        action: String,
+        clientRef: String,
+        attempt: String,
+        part: Int,
+        partCount: Int,
+        to: String,
+        slot: Int?,
+        mutable: Boolean,
+    ): PendingIntent {
+        val intent = Intent(action)
+            .setClass(context, SmsResultReceiver::class.java)
+            .setPackage(context.packageName)
+            // The data URI makes every (message attempt, event, part) a distinct
+            // PendingIntent -- otherwise FLAG_UPDATE_CURRENT would let parts (or
+            // two messages whose clientRef hashes collide) overwrite each other's extras.
+            .setData(
+                Uri.Builder().scheme("telephony-gateway").authority("sms-result")
+                    .appendPath(clientRef).appendPath(attempt).appendPath(action).appendPath(part.toString())
+                    .build()
+            )
+            .putExtra(SmsResultReceiver.EXTRA_CLIENT_REF, clientRef)
+            .putExtra(SmsResultReceiver.EXTRA_TO, to)
+            .putExtra(SmsResultReceiver.EXTRA_SLOT, slot ?: -1)
+            .putExtra(SmsResultReceiver.EXTRA_ATTEMPT, attempt)
+            .putExtra(SmsResultReceiver.EXTRA_PART_INDEX, part)
+            .putExtra(SmsResultReceiver.EXTRA_PART_COUNT, partCount)
+        val mutability = if (mutable) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        } else {
+            PendingIntent.FLAG_IMMUTABLE
         }
+        return PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or mutability)
+    }
+
+    /**
+     * The actual sendUssdRequest call, callable directly from the poll loop,
+     * SendUssd, or a check_balance device command. Every outcome -- response,
+     * callback failure, or an exception before/while issuing the request --
+     * ends in exactly one `telephony:ussd-result` run. [onComplete] (main
+     * thread) fires after that outcome is known, so callers can serialize
+     * sessions (a modem runs one USSD session at a time).
+     */
+    fun sendUssdDirect(
+        context: Context,
+        code: String,
+        requestId: String,
+        subscriptionId: Int? = null,
+        slot: Int? = null,
+        onComplete: (() -> Unit)? = null,
+    ) {
+        Log.i(TAG, "sendUssdDirect: requestId=$requestId subId=$subscriptionId slot=$slot")
         val handler = Handler(Looper.getMainLooper())
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun finish(responseText: String?, failureCode: String?, error: String?) {
+            if (!finished.compareAndSet(false, true)) return
+            dispatchUssdResult(context, requestId, responseText, failureCode, slot, error)
+            onComplete?.let { handler.post(it) }
+        }
 
-        telephonyManager.sendUssdRequest(code, object : TelephonyManager.UssdResponseCallback() {
-            override fun onReceiveUssdResponse(tm: TelephonyManager, request: String, response: CharSequence) {
-                dispatchUssdResult(context, requestId, responseText = response.toString(), failureCode = null, slot = slot)
-            }
+        try {
+            val base = context.getSystemService(TelephonyManager::class.java)
+                ?: throw IllegalStateException("TelephonyManager unavailable")
+            val telephonyManager = if (subscriptionId != null) base.createForSubscriptionId(subscriptionId) else base
 
-            override fun onReceiveUssdResponseFailed(tm: TelephonyManager, request: String, failureCode: Int) {
-                dispatchUssdResult(context, requestId, responseText = null, failureCode = "USSD_FAILURE_$failureCode", slot = slot)
-            }
-        }, handler)
+            telephonyManager.sendUssdRequest(code, object : TelephonyManager.UssdResponseCallback() {
+                override fun onReceiveUssdResponse(tm: TelephonyManager, request: String, response: CharSequence) {
+                    finish(response.toString(), null, null)
+                }
+
+                override fun onReceiveUssdResponseFailed(tm: TelephonyManager, request: String, failureCode: Int) {
+                    val reason = when (failureCode) {
+                        TelephonyManager.USSD_RETURN_FAILURE -> "USSD request failed (network or carrier returned failure)"
+                        TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "USSD service unavailable"
+                        else -> "USSD failed with code $failureCode"
+                    }
+                    finish(null, "USSD_FAILURE_$failureCode", reason)
+                }
+            }, handler)
+            // Some OEM stacks never call back; without this a claimed job (or a
+            // serialized check_balance chain) would wait forever.
+            handler.postDelayed({
+                finish(null, "USSD_TIMEOUT", "no USSD response within ${USSD_TIMEOUT_MILLIS / 1000} s")
+            }, USSD_TIMEOUT_MILLIS)
+        } catch (e: Throwable) {
+            Log.e(TAG, "sendUssdDirect FAILED for requestId=$requestId", e)
+            val failureCode = if (e is SecurityException) "USSD_PERMISSION_DENIED" else "USSD_EXCEPTION"
+            finish(null, failureCode, e.message ?: e.javaClass.simpleName)
+        }
     }
 
-    private fun dispatchUssdResult(context: Context, requestId: String, responseText: String?, failureCode: String?, slot: Int? = null) {
+    /** Payload keeps request_id/response_text/failure_code/slot; `error` is additive. */
+    fun dispatchUssdResult(context: Context, requestId: String, responseText: String?, failureCode: String?, slot: Int? = null, error: String? = null) {
         Log.i(TAG, "USSD result: requestId=$requestId failureCode=$failureCode slot=$slot")
-        EphemeralDispatch.post {
-            try {
-                val bridge = PHPBridge(context.applicationContext)
-                val bootstrapPath = "${bridge.getLaravelPath()}/bootstrap/android/ephemeral.php"
-                bridge.nativeEphemeralBoot(bootstrapPath)
-
-                val payload = JSONObject().apply {
-                    put("request_id", requestId)
-                    put("response_text", responseText)
-                    put("failure_code", failureCode)
-                    put("slot", slot ?: JSONObject.NULL)
-                }.toString()
-                val encoded = Base64.encodeToString(payload.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                val command = "telephony:ussd-result --payload=$encoded"
-
-                Log.i(TAG, "calling nativeEphemeralArtisan: $command")
-                val result = bridge.nativeEphemeralArtisan(command)
-                Log.i(TAG, "ephemeral artisan result: $result")
-            } catch (e: Throwable) {
-                Log.e(TAG, "dispatchUssdResult FAILED", e)
-            }
+        val payload = JSONObject().apply {
+            put("request_id", requestId)
+            put("response_text", responseText ?: JSONObject.NULL)
+            put("failure_code", failureCode ?: JSONObject.NULL)
+            put("slot", slot ?: JSONObject.NULL)
+            put("error", error ?: JSONObject.NULL)
+        }
+        EphemeralArtisan.post(context, "telephony:ussd-result", payload) { result ->
+            Log.i(TAG, "telephony:ussd-result requestId=$requestId reported=${result.ok}")
         }
     }
 }
