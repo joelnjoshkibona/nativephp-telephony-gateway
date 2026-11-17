@@ -5,12 +5,20 @@ import android.util.Base64
 import android.util.Log
 import com.nativephp.mobile.bridge.PHPBridge
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.util.UUID
 
 /**
  * The one way this plugin runs a host-app artisan command: boot NativePHP's
  * ephemeral runtime and call nativeEphemeralArtisan(), with the payload as
  * base64 JSON in `--payload=` (Runtime::artisan() splits on spaces with
  * str_getcsv, so raw JSON does not survive; base64 has no spaces/quotes).
+ * A payload too large for NativePHP's 4096-byte eval buffer is written to
+ * storage/app/gateway_payloads/<uuid>.json instead and passed as
+ * `--payload-file=<uuid>.json` (plain JSON, not base64); the host command
+ * reads and deletes it.
  *
  * Exit status: Runtime::artisan() (nativephp/mobile 3.3.x and 4.x) drops
  * Artisan::call()'s return value, so a command's own `return self::FAILURE`
@@ -44,11 +52,18 @@ object EphemeralArtisan {
      */
     fun runOnDispatchThread(context: Context, command: String, payload: JSONObject?): Result {
         return try {
-            val full = if (payload == null) {
+            val payloadJson = payload?.toString()
+            var full = if (payloadJson == null) {
                 command
             } else {
-                val encoded = Base64.encodeToString(payload.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                val encoded = Base64.encodeToString(payloadJson.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
                 "$command --payload=$encoded"
+            }
+            if (payloadJson != null && full.toByteArray(Charsets.UTF_8).size > GatewayRules.MAX_EPHEMERAL_COMMAND_BYTES) {
+                // Too big for the eval buffer: hand the payload over as a file.
+                val fileName = writePayloadFile(context, command, payloadJson)
+                full = "$command --payload-file=$fileName"
+                Log.i(TAG, "$command: payload is ${payloadJson.length} chars -- passed as --payload-file")
             }
             if (full.toByteArray(Charsets.UTF_8).size > GatewayRules.MAX_EPHEMERAL_COMMAND_BYTES) {
                 Log.e(TAG, "$command: command is ${full.length} bytes, over the ephemeral eval buffer -- not sent")
@@ -75,5 +90,40 @@ object EphemeralArtisan {
             Log.e(TAG, "$command threw", e)
             Result(false, null, e.message ?: e.javaClass.simpleName)
         }
+    }
+
+    private const val PAYLOAD_DIR = "gateway_payloads"
+    private const val PAYLOAD_MAX_AGE_MILLIS = 7L * 24 * 60 * 60 * 1000
+
+    /**
+     * Writes [payloadJson] to storage/app/gateway_payloads/<uuid>.json
+     * atomically (.tmp, then rename) and returns the file name. The uuid is
+     * name-based on (command, payload), so a retry of the same report reuses
+     * -- and atomically rewrites -- the same file. The host command deletes
+     * the file after reading it; Kotlin never deletes it, so a call detected
+     * as failed leaves it in place. Files older than 7 days are pruned here.
+     */
+    private fun writePayloadFile(context: Context, command: String, payloadJson: String): String {
+        val dir = File(gatewayAppStorageDir(context.applicationContext), PAYLOAD_DIR)
+        if (!dir.isDirectory && !dir.mkdirs()) throw IOException("cannot create ${dir.path}")
+
+        val now = System.currentTimeMillis()
+        dir.listFiles()?.forEach { f ->
+            if (f.isFile && now - f.lastModified() > PAYLOAD_MAX_AGE_MILLIS) f.delete()
+        }
+
+        val uuid = UUID.nameUUIDFromBytes("$command\n$payloadJson".toByteArray(Charsets.UTF_8))
+        val name = "$uuid.json"
+        val target = File(dir, name)
+        val tmp = File(dir, "$name.tmp")
+        FileOutputStream(tmp).use { out ->
+            out.write(payloadJson.toByteArray(Charsets.UTF_8))
+            out.fd.sync()
+        }
+        if (!tmp.renameTo(target)) {
+            tmp.delete()
+            throw IOException("cannot rename payload file into place")
+        }
+        return name
     }
 }
