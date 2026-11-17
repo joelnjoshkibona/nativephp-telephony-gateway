@@ -71,7 +71,8 @@ object EphemeralArtisan {
             }
 
             val bridge = PHPBridge(context.applicationContext)
-            val bootstrapPath = "${bridge.getLaravelPath()}/bootstrap/android/ephemeral.php"
+            val bootstrapPath = bootstrapScript(bridge.getLaravelPath())
+                ?: return Result(false, null, "no PHP bootstrap found (bootstrap/android/ephemeral.php or NativePHP's persistent.php)")
             val boot = bridge.nativeEphemeralBoot(bootstrapPath)
             if (boot != 0) {
                 Log.e(TAG, "$command: nativeEphemeralBoot returned $boot")
@@ -125,5 +126,19 @@ object EphemeralArtisan {
             throw IOException("cannot rename payload file into place")
         }
         return name
+    }
+
+    /**
+     * The file that boots the ephemeral runtime: the app's own bootstrap/android/ephemeral.php when it ships one, else
+     * NativePHP's bootstrap/android/persistent.php (present in v3 and v4; it loads the autoloader, boots Laravel and calls
+     * Runtime::boot, which is all the commands need). Never boots from a missing file: the runtime would be marked
+     * initialized with no autoloader, and every command would fail until the process dies.
+     */
+    private fun bootstrapScript(laravelPath: String): String? {
+        val candidates = listOf(
+            "$laravelPath/bootstrap/android/ephemeral.php",
+            "$laravelPath/vendor/nativephp/mobile/bootstrap/android/persistent.php",
+        )
+        return candidates.firstOrNull { java.io.File(it).isFile }
     }
 }
