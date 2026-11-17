@@ -85,7 +85,7 @@
             "android.permission.READ_CALL_LOG",
             "android.permission.READ_PHONE_STATE",
             "android.permission.FOREGROUND_SERVICE",
-            "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+            "android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING",
             "android.permission.POST_NOTIFICATIONS",
             "android.permission.CALL_PHONE",
             "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
@@ -100,7 +100,7 @@
             {
                 "name": ".TelephonyGatewayService",
                 "exported": false,
-                "foregroundServiceType": "dataSync"
+                "foregroundServiceType": "remoteMessaging"
             }
         ],
         "receivers": [

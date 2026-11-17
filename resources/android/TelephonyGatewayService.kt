@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
@@ -16,6 +17,7 @@ import android.os.Looper
 import android.provider.CallLog
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -71,7 +73,7 @@ class TelephonyGatewayService : Service() {
 
         /**
          * Shown when the gateway had to stop and Android does not let it
-         * restart itself (boot start refused, Android 15 dataSync time limit).
+         * restart itself (a refused background start, or the onTimeout safety net).
          * Tapping it opens the app -- the foreground transition is what lets
          * the app start the service again. Best effort: a missing
          * POST_NOTIFICATIONS grant just means it isn't shown.
@@ -107,12 +109,17 @@ class TelephonyGatewayService : Service() {
     override fun onCreate() {
         super.onCreate()
         try {
-            startForeground(NOTIFICATION_ID, buildNotification())
+            // remoteMessaging: this service relays text messages between the
+            // phone and the backend. Unlike dataSync it has no Android 15 daily
+            // time limit and may be started from BOOT_COMPLETED. The typed
+            // overload/constant only exist on API 34+; below that the manifest
+            // type is not enforced and 0 is what ServiceCompat expects.
+            val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING else 0
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), type)
         } catch (e: Throwable) {
             // Android 12+ refuses a background FGS start outside the exemptions
-            // (ForegroundServiceStartNotAllowedException), and Android 15 refuses a
-            // dataSync start from BOOT_COMPLETED or after its daily time limit.
-            // Stop cleanly instead of crashing the process.
+            // (ForegroundServiceStartNotAllowedException). Stop cleanly instead
+            // of crashing the process.
             Log.e(TAG, "onCreate: startForeground refused -- stopping", e)
             postPausedNotification(this, "Android did not allow the gateway to start in the background. Tap to open the app.")
             stopSelf()
@@ -373,14 +380,12 @@ class TelephonyGatewayService : Service() {
     }
 
     /**
-     * Android 15+: a dataSync foreground service may run ~6 h per 24 h; at the
-     * limit the system calls this and the service must stop within seconds or
-     * the app crashes. No restart is scheduled: Android also refuses any new
-     * dataSync FGS start until the user brings the app to the foreground
-     * (which resets the budget), so an alarm/receiver-driven restart would only
-     * fail. The "should run" flag stays set, and the paused notification opens
-     * the app -- reopening it (or the next boot / app update on versions where
-     * those may start dataSync) is the restart path.
+     * Safety net only. Android calls this when a foreground service type with
+     * a time limit (dataSync/mediaProcessing on Android 15+) reaches it; the
+     * remoteMessaging type this service declares has no such limit, so this is
+     * not expected to fire. If it ever does, stop within the required few
+     * seconds, keep the "should run" flag, and post the paused notification
+     * that opens the app (which can start the service again).
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
         Log.w(TAG, "onTimeout: foreground service time limit reached (type=$fgsType) -- stopping")
@@ -402,11 +407,20 @@ class TelephonyGatewayService : Service() {
 
     private fun buildNotification(): Notification {
         ensureChannel(this)
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+        val contentIntent = launch?.let {
+            PendingIntent.getActivity(this, NOTIFICATION_ID, it, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Njiwa Gateway active")
-            .setContentText("Watching for missed calls and messages")
+            .setContentText("Sending and receiving SMS, USSD and missed calls for Njiwa")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
+            .setSilent(true)
+            .setShowWhen(false)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .apply { contentIntent?.let { setContentIntent(it) } }
             .build()
     }
 

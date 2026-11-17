@@ -12,12 +12,12 @@ import android.util.Log
  * clears it), so a gateway the user stopped stays stopped.
  *
  * Android 12+ forbids starting a foreground service from the background
- * except for listed exemptions; receiving BOOT_COMPLETED, LOCKED_BOOT_COMPLETED
- * or MY_PACKAGE_REPLACED is one of them. Android 15 (targetSdk 35+) then
- * carves dataSync -- this service's type -- back out for BOOT_COMPLETED: the
- * start is refused with ForegroundServiceStartNotAllowedException. That
- * refusal is caught here and in the service's onCreate(), and a "paused"
- * notification that opens the app is shown instead.
+ * except for listed exemptions; receiving BOOT_COMPLETED or
+ * MY_PACKAGE_REPLACED is one of them. Android 15 removed that exemption for
+ * some types (dataSync, camera, mediaPlayback, ...) but not remoteMessaging,
+ * this service's type -- so this starts the service on every version. A
+ * start that is nevertheless refused is caught (here and in the service's
+ * onCreate()) and a "paused" notification that opens the app is shown.
  */
 class BootReceiver : BroadcastReceiver() {
 
