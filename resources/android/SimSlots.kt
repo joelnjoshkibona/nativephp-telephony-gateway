@@ -70,6 +70,20 @@ object SimSlots {
         }
     }
 
+    /**
+     * The subscription ids of the SIMs in the phone now, or null when they cannot be read (no READ_PHONE_STATE, an
+     * error): null must never be taken for "no SIM", or every SIM would look removed.
+     */
+    fun presentSubscriptionIds(context: Context): List<Int>? {
+        return try {
+            val manager = subscriptionManager(context) ?: return null
+            (manager.activeSubscriptionInfoList ?: emptyList()).map { it.subscriptionId }
+        } catch (e: Throwable) {
+            Log.w(TAG, "presentSubscriptionIds: unavailable", e)
+            null
+        }
+    }
+
     fun slotForSubscriptionId(context: Context, subscriptionId: Int): Int? {
         if (subscriptionId < 0) return null
 

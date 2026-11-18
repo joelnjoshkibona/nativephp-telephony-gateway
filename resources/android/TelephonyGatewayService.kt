@@ -302,6 +302,8 @@ class TelephonyGatewayService : Service() {
                 battery.percent?.let { commandParts.add("--battery-pct=$it") }
                 battery.isCharging?.let { commandParts.add("--is-charging=${if (it) 1 else 0}") }
                 commandParts.add("--network-type=$networkType")
+                // Which SIMs are in the phone now, so the server notices one taken out (only when they could be read).
+                SimSlots.presentSubscriptionIds(applicationContext)?.let { commandParts.add("--present-subs=${it.joinToString(",").ifEmpty { "none" }}") }
 
                 EphemeralArtisan.runOnDispatchThread(applicationContext, commandParts.joinToString(" "), null)
             } catch (e: Throwable) {
