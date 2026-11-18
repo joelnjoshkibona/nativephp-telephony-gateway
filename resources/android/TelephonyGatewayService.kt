@@ -43,6 +43,8 @@ class TelephonyGatewayService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val PAUSED_NOTIFICATION_ID = 1002
         private const val PREF_LAST_CALL_LOG_ID = "last_call_log_id"
+        /** Epoch ms from which missed calls are reported; set the first time the scan runs (see checkForNewMissedCalls). */
+        private const val PREF_CALLS_SINCE = "missed_calls_since"
         private const val FALLBACK_POLL_SECONDS = 20L
 
         /**
@@ -444,6 +446,21 @@ class TelephonyGatewayService : Service() {
         var mark = prefs.getLong(PREF_LAST_CALL_LOG_ID, 0L)
         val watched = GatewayPrefs.watchedSims(applicationContext)
 
+        // Only calls from now on: the first scan on an install (or after an update to this version) records the time
+        // and, when there is no mark yet, starts the mark at the newest call already in the log. Without this a fresh
+        // install reported the phone's whole call history as missed calls, one upload at a time.
+        var since = prefs.getLong(PREF_CALLS_SINCE, 0L)
+        if (since <= 0L) {
+            since = System.currentTimeMillis()
+            val edit = prefs.edit().putLong(PREF_CALLS_SINCE, since)
+            if (!prefs.contains(PREF_LAST_CALL_LOG_ID)) {
+                mark = newestCallLogId()
+                edit.putLong(PREF_LAST_CALL_LOG_ID, mark)
+            }
+            edit.commit()
+            Log.i(TAG, "missed calls reported from now on (mark $mark)")
+        }
+
         val projection = arrayOf(
             CallLog.Calls._ID,
             CallLog.Calls.NUMBER,
@@ -484,8 +501,12 @@ class TelephonyGatewayService : Service() {
                         continue
                     }
 
-                    val number = cursor.getString(numberCol) ?: "unknown"
                     val date = cursor.getLong(dateCol)
+                    if (GatewayRules.isOldCallHistory(date, since)) {
+                        advanceTo(id)
+                        continue
+                    }
+                    val number = cursor.getString(numberCol) ?: "unknown"
                     if (!dispatchMissedCall(id, number, date, subscriptionId)) {
                         Log.w(TAG, "missed call $id not reported -- high-water mark held at $mark, will retry")
                         break
@@ -496,6 +517,14 @@ class TelephonyGatewayService : Service() {
         } catch (e: SecurityException) {
             Log.e(TAG, "checkForNewMissedCalls: READ_CALL_LOG not granted", e)
         }
+    }
+
+    /** The newest call-log row's id (any call type), or 0 when the log is empty or cannot be read. */
+    private fun newestCallLogId(): Long = try {
+        contentResolver.query(CallLog.Calls.CONTENT_URI, arrayOf(CallLog.Calls._ID), null, null, "${CallLog.Calls._ID} DESC")
+            ?.use { c -> if (c.moveToFirst()) c.getLong(0) else 0L } ?: 0L
+    } catch (e: SecurityException) {
+        0L
     }
 
     /** True only when `telephony:missed-call` ran without a failure signal. */

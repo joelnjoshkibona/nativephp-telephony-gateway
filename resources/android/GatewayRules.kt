@@ -14,6 +14,21 @@ object GatewayRules {
     const val INVALID_SUBSCRIPTION_ID = -1
 
     // ---------------------------------------------------------------------
+    // Missed calls: only calls that happened while the gateway was on duty
+    // ---------------------------------------------------------------------
+
+    /** A call this long before the gateway started reporting is still reported (it rang just before). */
+    const val MISSED_CALL_GRACE_MS = 10 * 60 * 1000L
+
+    /**
+     * True when a missed call is part of the phone's old history rather than a call to report: it rang more than
+     * [MISSED_CALL_GRACE_MS] before `reportingSince` (epoch ms, when this install started reporting calls). Such a
+     * call is skipped on the phone, never uploaded. `reportingSince` <= 0 means not known yet: report.
+     */
+    fun isOldCallHistory(callDateMs: Long, reportingSince: Long): Boolean =
+        reportingSince > 0 && callDateMs < reportingSince - MISSED_CALL_GRACE_MS
+
+    // ---------------------------------------------------------------------
     // Watched SIMs (privacy filter)
     // ---------------------------------------------------------------------
 
