@@ -86,4 +86,36 @@ object GatewayPrefs {
         context.applicationContext.getSharedPreferences(PARTS_PREFS_NAME, Context.MODE_PRIVATE)
             .edit().remove(key).commit()
     }
+
+    // ---------------------------------------------------------------------
+    // Received SMS waiting to be journaled
+    // ---------------------------------------------------------------------
+    // The SMS receiver writes each SMS here and returns at once: the one PHP worker thread may be inside a 15 s
+    // network call, and Android shows "isn't responding" when a receiver holds an SMS broadcast past ~10 s. The worker
+    // journals it and removes it; anything left (the process died first) is journaled again on the next heartbeat.
+    // Keyed by device_message_uid, so a replay is the same SMS, which the app and the server already ignore twice.
+    private const val INBOX_PREFS_NAME = "telephony_gateway_inbox"
+
+    private fun inbox(context: Context): SharedPreferences =
+        context.applicationContext.getSharedPreferences(INBOX_PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun holdInbound(context: Context, uid: String, payload: org.json.JSONObject) {
+        inbox(context).edit().putString(uid, payload.toString()).commit()
+    }
+
+    fun releaseInbound(context: Context, uid: String) {
+        inbox(context).edit().remove(uid).commit()
+    }
+
+    fun isHeld(context: Context, uid: String): Boolean = inbox(context).contains(uid)
+
+    /** Oldest first, so replies keep their order. */
+    fun heldInbound(context: Context): List<org.json.JSONObject> =
+        inbox(context).all.values.mapNotNull { v ->
+            try {
+                org.json.JSONObject(v as String)
+            } catch (e: Throwable) {
+                null
+            }
+        }.sortedBy { it.optLong("received_at") }
 }

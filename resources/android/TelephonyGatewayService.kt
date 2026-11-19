@@ -286,6 +286,11 @@ class TelephonyGatewayService : Service() {
     private fun runHeartbeatTick() {
         EphemeralDispatch.post {
             try {
+                SmsInbox.drain(applicationContext)
+            } catch (e: Throwable) {
+                Log.e(TAG, "SmsInbox.drain FAILED", e)
+            }
+            try {
                 val fcmToken = getSharedPreferences(FCM_PREFS_NAME, Context.MODE_PRIVATE)
                     .getString(FCM_PREFS_KEY, null)
                 val battery = DeviceTelemetry.readBattery(applicationContext)

@@ -15,9 +15,10 @@ import org.json.JSONObject
  * php_bridge.c's g_ephemeral_mutex). See docs/specs/mobile/
  * telephony-gateway-plugin.md for the spike that proved this mechanism.
  *
- * goAsync() extends this receiver's lifetime past onReceive()'s return so the
- * (potentially slow, first-boot) JNI call can run on a background thread
- * without tripping Android's ~10s broadcast-receiver ANR timeout.
+ * The SMS is written to GatewayPrefs' inbox and onReceive returns at once. It does not wait for PHP: the one worker
+ * thread may be in a network call (claim, upload, heartbeat: up to 15 s each), and an SMS broadcast held past ~10 s
+ * is an ANR ("Njiwa isn't responding", seen on a Galaxy A04 in the field). The worker journals it and releases it;
+ * one left behind by a dead process is journaled on the next heartbeat (SmsInbox.drain).
  */
 class SmsReceivedReceiver : BroadcastReceiver() {
 
@@ -73,11 +74,8 @@ class SmsReceivedReceiver : BroadcastReceiver() {
         // --payload=, not a positional argument -- Runtime::artisan()'s
         // parser only correctly binds `--key=value` tokens; see
         // TelephonySmsReceivedCommand's own docblock in the host app.
-        val pendingResult = goAsync()
-        EphemeralArtisan.post(context, "telephony:sms-received", payload) { result ->
-            Log.i(TAG, "telephony:sms-received ok=${result.ok}")
-            pendingResult.finish()
-        }
+        GatewayPrefs.holdInbound(context, deviceMessageUid, payload)
+        EphemeralDispatch.post { SmsInbox.journal(context.applicationContext, payload) }
     }
 
     /** Null when absent; tolerates the extra being stored as Int or Long. */
